@@ -6,9 +6,30 @@ Python monitoring agent for Napatech A/S (NAPA.OL), focused on shareholder chang
 
 1. `python -m venv .venv && source .venv/bin/activate`
 2. `pip install -e .`
-3. `cp .env.example .env` and update SMTP credentials
+3. `cp .env.example .env` and configure SMTP values
 4. Run scheduler: `python -m napa_agent.scripts.run` or `python scripts/run.py`
 5. Run tests: `pytest`
+
+## Gmail SMTP setup
+
+1. Create (or use) a Gmail account for notifications.
+2. Enable 2-step verification in the Google account security settings.
+3. Create an App Password for "Mail".
+4. Put SMTP values into `.env`:
+
+```env
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your_gmail_address@gmail.com
+SMTP_PASSWORD=your_16_char_app_password
+SMTP_FROM=your_gmail_address@gmail.com
+SMTP_TO=recipient@example.com
+```
+
+Notes:
+- Port `587` uses STARTTLS.
+- Port `465` uses implicit SSL/TLS.
+- Send a test email: `python scripts/send_test_email.py`.
 
 ## Monday Top-20 monitoring behavior (Europe/Oslo)
 

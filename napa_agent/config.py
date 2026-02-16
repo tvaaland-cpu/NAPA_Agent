@@ -16,9 +16,8 @@ class Settings(BaseModel):
 
     smtp_host: str = Field(alias="SMTP_HOST")
     smtp_port: int = Field(default=587, alias="SMTP_PORT")
-    smtp_username: str = Field(alias="SMTP_USERNAME")
+    smtp_user: str = Field(alias="SMTP_USER")
     smtp_password: str = Field(alias="SMTP_PASSWORD")
-    smtp_use_tls: bool = Field(default=True, alias="SMTP_USE_TLS")
     smtp_from: str = Field(alias="SMTP_FROM")
     smtp_to: str = Field(alias="SMTP_TO")
 
