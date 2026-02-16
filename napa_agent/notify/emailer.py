@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import smtplib
 from email.message import EmailMessage
+from typing import TYPE_CHECKING
 
-from napa_agent.config import Settings
+if TYPE_CHECKING:
+    from napa_agent.config import Settings
 
 
 def send_email(settings: Settings, subject: str, body: str) -> None:
