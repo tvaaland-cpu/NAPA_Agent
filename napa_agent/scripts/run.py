@@ -21,7 +21,7 @@ def main() -> None:
     init_db(engine)
 
     scheduler = build_scheduler()
-    scheduler.add_job(run_daily_monitor, "cron", hour=7, minute=10, args=[engine, settings], id="daily_monitor")
+    scheduler.add_job(run_daily_monitor, "cron", hour=7, minute=0, args=[engine, settings], id="daily_monitor")
     scheduler.add_job(
         shareholders_check,
         "cron",
