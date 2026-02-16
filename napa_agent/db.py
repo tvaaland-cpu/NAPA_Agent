@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from napa_agent.sources.napatech_shareinfo import ShareholderRow, ShareholderSnapshot
 
 
 def _to_sqlite_path(database_url: str) -> str:
@@ -36,6 +39,40 @@ def init_db(conn: sqlite3.Connection) -> None:
             payload TEXT NOT NULL,
             observed_at TEXT NOT NULL,
             UNIQUE(source, item_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS shareholder_snapshots (
+            snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_dt TEXT NOT NULL,
+            updated_label TEXT,
+            source_url TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS shareholder_rows (
+            snapshot_id INTEGER NOT NULL,
+            rank INTEGER NOT NULL,
+            holder_name TEXT NOT NULL,
+            shares INTEGER NOT NULL,
+            pct REAL NOT NULL,
+            holder_type TEXT,
+            country TEXT,
+            FOREIGN KEY(snapshot_id) REFERENCES shareholder_snapshots(snapshot_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS shareholder_runs (
+            run_dt TEXT NOT NULL,
+            attempt_hour INTEGER NOT NULL,
+            updated_changed_bool INTEGER NOT NULL,
+            notes TEXT
         )
         """
     )
@@ -95,3 +132,112 @@ def fetch_recent(conn: sqlite3.Connection, source: str, limit: int = 20) -> list
             }
         )
     return result
+
+
+def insert_shareholder_snapshot(
+    conn: sqlite3.Connection,
+    snapshot: ShareholderSnapshot,
+    *,
+    attempt_hour: int,
+    notes: str | None = None,
+) -> tuple[bool, int | None]:
+    last_snapshot = _fetch_last_snapshot(conn)
+    new_hash = _rows_hash(snapshot.rows)
+
+    is_changed = True
+    if last_snapshot is not None:
+        last_updated, last_hash = last_snapshot
+        if (snapshot.updated_label or "") == (last_updated or "") and new_hash == last_hash:
+            is_changed = False
+
+    snapshot_id: int | None = None
+    if is_changed:
+        cursor = conn.execute(
+            """
+            INSERT INTO shareholder_snapshots (snapshot_dt, updated_label, source_url)
+            VALUES (?, ?, ?)
+            """,
+            (snapshot.fetched_at.isoformat(), snapshot.updated_label, snapshot.source_url),
+        )
+        snapshot_id = int(cursor.lastrowid)
+        conn.executemany(
+            """
+            INSERT INTO shareholder_rows (
+                snapshot_id, rank, holder_name, shares, pct, holder_type, country
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    snapshot_id,
+                    row.rank,
+                    row.holder_name,
+                    row.shares,
+                    row.pct,
+                    row.holder_type,
+                    row.country,
+                )
+                for row in snapshot.rows
+            ],
+        )
+
+    conn.execute(
+        """
+        INSERT INTO shareholder_runs (run_dt, attempt_hour, updated_changed_bool, notes)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            datetime.now(timezone.utc).isoformat(),
+            attempt_hour,
+            1 if is_changed else 0,
+            notes,
+        ),
+    )
+    conn.commit()
+    return is_changed, snapshot_id
+
+
+def _fetch_last_snapshot(conn: sqlite3.Connection) -> tuple[str | None, str] | None:
+    snapshot = conn.execute(
+        """
+        SELECT snapshot_id, updated_label
+        FROM shareholder_snapshots
+        ORDER BY snapshot_dt DESC, snapshot_id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if snapshot is None:
+        return None
+
+    rows = conn.execute(
+        """
+        SELECT rank, holder_name, shares, pct, holder_type, country
+        FROM shareholder_rows
+        WHERE snapshot_id = ?
+        ORDER BY rank ASC
+        """,
+        (snapshot["snapshot_id"],),
+    ).fetchall()
+
+    serialized_rows = [
+        {
+            "rank": row["rank"],
+            "holder_name": row["holder_name"],
+            "shares": row["shares"],
+            "pct": row["pct"],
+            "holder_type": row["holder_type"],
+            "country": row["country"],
+        }
+        for row in rows
+    ]
+    return snapshot["updated_label"], _hash_serialized(serialized_rows)
+
+
+def _rows_hash(rows: list[ShareholderRow]) -> str:
+    serialized_rows = [row.model_dump() for row in sorted(rows, key=lambda item: item.rank)]
+    return _hash_serialized(serialized_rows)
+
+
+def _hash_serialized(payload: list[dict[str, Any]]) -> str:
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
