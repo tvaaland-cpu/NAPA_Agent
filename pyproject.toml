@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "napa-agent"
+version = "0.1.0"
+description = "Monitoring agent for Napatech A/S"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "requests>=2.31.0",
+  "beautifulsoup4>=4.12.0",
+  "lxml>=5.0.0",
+  "python-dotenv>=1.0.0",
+  "apscheduler>=3.10.0",
+  "tenacity>=8.2.0",
+  "sqlalchemy>=2.0.0",
+  "pydantic>=2.6.0",
+  "pytest>=8.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["napa_agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
