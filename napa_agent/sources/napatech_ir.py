@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -32,9 +34,24 @@ class _LinkParser(HTMLParser):
             self._text = ""
 
 
+def _parse_published_at(text: str) -> datetime | None:
+    patterns = [r"(\d{4}-\d{2}-\d{2})", r"(\d{2}/\d{2}/\d{4})"]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        value = match.group(1)
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+    return None
+
+
 @retry_call(attempts=3, base_delay=1, max_delay=10)
-def fetch_ir_updates(base_url: str, timeout: int = 30) -> list[dict[str, str]]:
-    items: list[dict[str, str]] = []
+def fetch_ir_updates(base_url: str, timeout: int = 30) -> list[dict[str, str | datetime | None]]:
+    items: list[dict[str, str | datetime | None]] = []
     for path in IR_PATHS:
         page_url = urljoin(base_url, path)
         request = Request(page_url, headers={"User-Agent": "napa-agent/0.1"})
@@ -53,7 +70,16 @@ def fetch_ir_updates(base_url: str, timeout: int = 30) -> list[dict[str, str]]:
                 continue
             full_url = urljoin(page_url, href)
             item_id = full_url.rstrip("/").split("/")[-1] or title
-            items.append({"id": item_id, "title": title, "url": full_url, "section": path.rstrip("/")})
+            items.append(
+                {
+                    "id": item_id,
+                    "title": title,
+                    "url": full_url,
+                    "section": path.rstrip("/"),
+                    "published_at": _parse_published_at(title),
+                    "summary": title,
+                }
+            )
 
-    dedup = {(i["id"], i["url"]): i for i in items}
+    dedup = {(str(i["id"]), str(i["url"])): i for i in items}
     return list(dedup.values())[:40]

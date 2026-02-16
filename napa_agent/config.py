@@ -22,6 +22,8 @@ class Settings(BaseModel):
     smtp_from: str = Field(alias="SMTP_FROM")
     smtp_to: str = Field(alias="SMTP_TO")
 
+    web_search_endpoint: str = Field(default="", alias="WEB_SEARCH_ENDPOINT")
+
     napatech_shareinfo_url: str = Field(
         default="https://napatech.com/investor-relations/share-information/",
         alias="NAPATECH_SHAREINFO_URL",

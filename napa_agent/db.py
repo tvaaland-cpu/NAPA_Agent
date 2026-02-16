@@ -9,6 +9,8 @@ from typing import Any
 
 from napa_agent.sources.napatech_shareinfo import ShareholderRow, ShareholderSnapshot
 
+RUMOR_STATUSES = {"new", "watch", "confirmed", "debunked", "stale"}
+
 
 def _to_sqlite_path(database_url: str) -> str:
     if database_url.startswith("sqlite:///"):
@@ -39,6 +41,36 @@ def init_db(conn: sqlite3.Connection) -> None:
             payload TEXT NOT NULL,
             observed_at TEXT NOT NULL,
             UNIQUE(source, item_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS news_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT NOT NULL,
+            title TEXT NOT NULL,
+            published_at TEXT,
+            discovered_at TEXT NOT NULL,
+            source_tier INTEGER NOT NULL,
+            tags_json TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            rumor INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(url),
+            UNIQUE(content_hash)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rumors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            news_item_id INTEGER NOT NULL UNIQUE,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(news_item_id) REFERENCES news_items(id)
         )
         """
     )
@@ -77,6 +109,118 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
     conn.commit()
+
+
+def _build_content_hash(url: str, title: str, summary: str) -> str:
+    del url
+    normalized = f"{title.strip()}\n{summary.strip()}".lower()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def insert_news_item(
+    conn: sqlite3.Connection,
+    *,
+    url: str,
+    title: str,
+    published_at: datetime | None,
+    discovered_at: datetime | None,
+    source_tier: int,
+    tags: list[str],
+    summary: str,
+    rumor: bool,
+) -> tuple[bool, int | None]:
+    content_hash = _build_content_hash(url=url, title=title, summary=summary)
+    discovered_at = discovered_at or datetime.now(timezone.utc)
+
+    existing = conn.execute(
+        "SELECT id FROM news_items WHERE url = ? OR content_hash = ?",
+        (url, content_hash),
+    ).fetchone()
+    if existing is not None:
+        return False, None
+
+    cursor = conn.execute(
+        """
+        INSERT INTO news_items (
+            url, title, published_at, discovered_at, source_tier,
+            tags_json, summary, content_hash, rumor
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            url,
+            title,
+            published_at.isoformat() if published_at else None,
+            discovered_at.isoformat(),
+            source_tier,
+            json.dumps(tags),
+            summary,
+            content_hash,
+            1 if rumor else 0,
+        ),
+    )
+    item_id = int(cursor.lastrowid)
+
+    if rumor:
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """
+            INSERT INTO rumors (news_item_id, status, created_at, updated_at)
+            VALUES (?, 'new', ?, ?)
+            """,
+            (item_id, now, now),
+        )
+
+    conn.commit()
+    return True, item_id
+
+
+def set_rumor_status(conn: sqlite3.Connection, rumor_id: int, status: str) -> None:
+    if status not in RUMOR_STATUSES:
+        raise ValueError(f"Invalid rumor status: {status}")
+
+    conn.execute(
+        "UPDATE rumors SET status = ?, updated_at = ? WHERE id = ?",
+        (status, datetime.now(timezone.utc).isoformat(), rumor_id),
+    )
+    conn.commit()
+
+
+def confirm_rumors_with_tier1_item(conn: sqlite3.Connection, tier1_news_item_id: int) -> int:
+    row = conn.execute(
+        "SELECT title FROM news_items WHERE id = ? AND source_tier = 1",
+        (tier1_news_item_id,),
+    ).fetchone()
+    if row is None:
+        return 0
+
+    tier1_tokens = {token.lower() for token in row["title"].split() if len(token) > 4}
+    if not tier1_tokens:
+        return 0
+
+    rumor_rows = conn.execute(
+        """
+        SELECT r.id, n.title
+        FROM rumors r
+        JOIN news_items n ON n.id = r.news_item_id
+        WHERE r.status IN ('new', 'watch', 'stale')
+        """
+    ).fetchall()
+
+    updated = 0
+    now = datetime.now(timezone.utc).isoformat()
+    for rumor in rumor_rows:
+        rumor_tokens = {token.lower() for token in rumor["title"].split() if len(token) > 4}
+        if tier1_tokens.intersection(rumor_tokens):
+            conn.execute(
+                "UPDATE rumors SET status = 'confirmed', updated_at = ? WHERE id = ?",
+                (now, rumor["id"]),
+            )
+            updated += 1
+
+    if updated:
+        conn.commit()
+    return updated
 
 
 def insert_observation(
