@@ -67,6 +67,13 @@ class _TickerParser(HTMLParser):
         self._in_time = False
 
 
+def _fix_mojibake(s: str) -> str:
+    try:
+        return s.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return s
+
+
 def _parse_datetime(value: str) -> datetime | None:
     text = value.strip()
     if not text:
@@ -100,6 +107,7 @@ def parse_ticker_html(html: str, base_url: str = FINANSAVISEN_TICKER_URL) -> lis
         href = candidate["href"].strip()
         if not title or not href:
             continue
+        title = _fix_mojibake(title).strip()
         full_url = urljoin(base_url, href)
         item_id = full_url.rstrip("/").split("/")[-1] or title
         dedup_key = (title.lower(), full_url)

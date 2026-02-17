@@ -40,7 +40,10 @@ class _ReportsPageParser(HTMLParser):
         if tag in {"h1", "h2", "h3", "h4"} and self._in_heading:
             heading = self._heading_text.strip()
             if heading:
-                self._current_section = heading
+                # normalize section headings to a slug-like form
+                heading_mod = heading.replace("&", "and")
+                slug = re.sub(r"[^a-z0-9]+", "-", heading_mod.lower()).strip("-")
+                self._current_section = slug or self._current_section
             self._in_heading = False
             self._heading_text = ""
             return

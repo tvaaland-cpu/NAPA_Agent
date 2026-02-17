@@ -6,9 +6,22 @@ from datetime import datetime, timezone
 from napa_agent.config import Settings
 from napa_agent.db import confirm_rumors_with_tier1_item, insert_news_item
 from napa_agent.notify.emailer import send_email
-from napa_agent.sources.e24_sources import fetch_e24_news
 from napa_agent.sources.euronext_news import fetch_company_news
-from napa_agent.sources.finansavisen_ticker import fetch_ticker_news
+from napa_agent.sources.napatech_ir import fetch_ir_updates
+from napa_agent.sources.web_search import search_web
+
+# Optional sources: import if available, otherwise provide no-op fallbacks
+try:
+    from napa_agent.sources.e24_sources import fetch_e24_news  # type: ignore
+except Exception:
+    def fetch_e24_news() -> list[dict]:
+        return []
+
+try:
+    from napa_agent.sources.finansavisen_ticker import fetch_ticker_news  # type: ignore
+except Exception:
+    def fetch_ticker_news() -> list[dict]:
+        return []
 from napa_agent.sources.napatech_ir import fetch_ir_updates
 from napa_agent.sources.web_search import search_web
 
@@ -18,7 +31,6 @@ logger = logging.getLogger(__name__)
 def run_daily_monitor(engine, settings: Settings) -> int:
     discovered = 0
     discovered_at = datetime.now(timezone.utc)
-
     euronext_items: list[str] = []
     e24_items: list[str] = []
     finansavisen_items: list[str] = []
@@ -134,13 +146,16 @@ def run_daily_monitor(engine, settings: Settings) -> int:
     body_lines.append("")
     body_lines.append(f"Partner/rumor sweep: {search_note}")
 
-    send_email(settings, "Napatech daily monitor digest", "\n".join(body_lines))
-    logger.info(
-        "Sent daily monitor digest (euronext=%s e24=%s finansavisen=%s ir=%s)",
-        len(euronext_items),
-        len(e24_items),
-        len(finansavisen_items),
-        len(ir_items),
-    )
+    try:
+        send_email(settings, "Napatech daily monitor digest", "\n".join(body_lines))
+        logger.info(
+            "Sent daily monitor digest (euronext=%s e24=%s finansavisen=%s ir=%s)",
+            len(euronext_items),
+            len(e24_items),
+            len(finansavisen_items),
+            len(ir_items),
+        )
+    except Exception:
+        logger.exception("Failed to send daily monitor digest; continuing")
 
     return discovered

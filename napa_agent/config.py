@@ -5,6 +5,13 @@ from functools import lru_cache
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env from repo root (works even when running scripts from /scripts)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(REPO_ROOT / ".env")
+
 
 
 class Settings(BaseModel):
