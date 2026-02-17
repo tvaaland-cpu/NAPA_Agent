@@ -78,6 +78,24 @@ def _parse_published_at(text: str) -> datetime | None:
     return None
 
 
+@retry_call(attempts=3, base_delay=1, max_delay=10)
+def fetch_ir_updates(base_url: str, timeout: int = 30) -> list[dict[str, str | datetime | None]]:
+    request = Request(base_url, headers={"User-Agent": "napa-agent/0.1"})
+    with urlopen(request, timeout=timeout) as response:
+        html = response.read().decode("utf-8", errors="ignore")
+
+    parser = _LinkParser()
+    parser.feed(html)
+
+    items: list[dict[str, str | datetime | None]] = []
+    for title, href in parser.links:
+        if not href or not title:
+            continue
+        if len(title) < 8:
+            continue
+        if not any(k in title.lower() for k in ["report", "presentation", "release", "interim", "announcement"]):
+            continue
+        full_url = urljoin(base_url, href)
 def parse_ir_updates(html: str, page_url: str) -> list[dict[str, str | datetime | None]]:
     parser = _ReportsPageParser()
     parser.feed(html)
@@ -100,6 +118,7 @@ def parse_ir_updates(html: str, page_url: str) -> list[dict[str, str | datetime 
                 "id": item_id,
                 "title": title,
                 "url": full_url,
+                "section": "reports-and-presentations",
                 "section": item["section"],
                 "published_at": _parse_published_at(title),
                 "summary": title,
