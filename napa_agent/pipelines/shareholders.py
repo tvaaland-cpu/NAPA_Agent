@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from email.utils import format_datetime
+from html import escape
 from zoneinfo import ZoneInfo
 
 from typing import TYPE_CHECKING, Any
@@ -89,6 +90,11 @@ def shareholders_check(
                 report = _build_update_report(engine, previous_snapshot, current_snapshot)
                 subject = "NAPA Monday Top-20 update"
                 body = f"Monday Top-20 update detected at {attempt_hour:02d}:00 Europe/Oslo.\n\n{report}"
+                html_body = _build_shareholder_email_html(
+                    heading=f"Monday Top-20 update detected at {attempt_hour:02d}:00 Europe/Oslo.",
+                    previous=previous_snapshot,
+                    current=current_snapshot,
+                )
             else:
                 # No change but emailing (force or final attempt)
                 report = _build_unchanged_report(previous_snapshot)
@@ -101,8 +107,18 @@ def shareholders_check(
                     if force
                     else f"Monday Top-20 unchanged by 16:00 Europe/Oslo.\nFinal decision: assumed unchanged for this Monday.\n\n{report}"
                 )
-            
-            send_email(settings, subject, body)
+                html_heading = (
+                    "Manual force run completed."
+                    if force
+                    else "Monday Top-20 unchanged by 16:00 Europe/Oslo. Final decision: assumed unchanged for this Monday."
+                )
+                html_body = _build_shareholder_email_html(
+                    heading=html_heading,
+                    previous=previous_snapshot,
+                    current=previous_snapshot,
+                )
+
+            send_email(settings, subject, body, html_body)
 
         # Cancel remaining retry jobs if we found a change (and not a force run)
         if changed and not force and is_monday and scheduler is not None:
@@ -214,6 +230,67 @@ def _build_unchanged_report(previous: dict | None) -> str:
         _current_top20_section(previous.get("rows", [])),
     ]
     return "\n".join(lines)
+
+
+def _build_shareholder_email_html(*, heading: str, previous: dict | None, current: dict | None) -> str:
+    rows = current["rows"] if current else []
+    prev_rows = previous["rows"] if previous else []
+    prev_map = {row["holder_name"]: row for row in prev_rows}
+    curr_map = {row["holder_name"]: row for row in rows}
+    entrants = sorted(name for name in curr_map if name not in prev_map)
+    exits = sorted(name for name in prev_map if name not in curr_map)
+
+    table_rows: list[str] = []
+    for row in rows[:20]:
+        holder = str(row.get("holder_name") or "")
+        previous_row = prev_map.get(holder)
+        rank = int(row.get("rank") or 0)
+        shares = int(row.get("shares") or 0)
+        pct = float(row.get("pct") or 0.0)
+        holder_type = str(row.get("holder_type") or "")
+
+        if previous_row is None:
+            delta_rank_text = "new"
+            delta_shares = shares
+            delta_pp = pct
+        else:
+            prev_rank = int(previous_row.get("rank") or rank)
+            prev_shares = int(previous_row.get("shares") or 0)
+            prev_pct = float(previous_row.get("pct") or 0.0)
+            delta_rank = prev_rank - rank
+            delta_rank_text = f"{delta_rank:+d}"
+            delta_shares = shares - prev_shares
+            delta_pp = pct - prev_pct
+
+        table_rows.append(
+            "<tr>"
+            f"<td>{rank}</td>"
+            f"<td>{escape(holder)}</td>"
+            f"<td style='text-align:right'>{shares:,}</td>"
+            f"<td style='text-align:right'>{pct:.2f}%</td>"
+            f"<td>{escape(holder_type)}</td>"
+            f"<td style='text-align:right'>{escape(delta_rank_text)}</td>"
+            f"<td style='text-align:right'>{delta_shares:+,}</td>"
+            f"<td style='text-align:right'>{delta_pp:+.2f}</td>"
+            "</tr>"
+        )
+
+    entrants_text = ", ".join(escape(name) for name in entrants) if entrants else "none"
+    exits_text = ", ".join(escape(name) for name in exits) if exits else "none"
+    rows_html = "".join(table_rows) if table_rows else "<tr><td colspan='8'>No data</td></tr>"
+
+    return (
+        "<html><body>"
+        f"<p><strong>{escape(heading)}</strong></p>"
+        f"<p>Entrants: {entrants_text}<br>Exits: {exits_text}</p>"
+        "<table border='1' cellspacing='0' cellpadding='6' style='border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px'>"
+        "<thead><tr>"
+        "<th>Rank</th><th>Holder</th><th>Shares</th><th>%</th><th>Type</th><th>&Delta;Rank</th><th>&Delta;Shares</th><th>&Delta;pp</th>"
+        "</tr></thead>"
+        f"<tbody>{rows_html}</tbody>"
+        "</table>"
+        "</body></html>"
+    )
 
 
 def _totals_section(prev_rows: list[dict], curr_rows: list[dict]) -> str:

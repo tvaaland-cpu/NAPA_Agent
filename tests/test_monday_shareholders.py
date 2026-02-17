@@ -70,7 +70,11 @@ def test_monday_update_detected_sends_email_and_cancels_retries(monkeypatch) -> 
 
     monkeypatch.setattr(module, "datetime", MondayDateTime)
     monkeypatch.setattr(module, "fetch_shareholders", lambda _url: new)
-    monkeypatch.setattr(module, "send_email", lambda _s, subject, body: sent.update(subject=subject, body=body))
+    monkeypatch.setattr(
+        module,
+        "send_email",
+        lambda _s, subject, body, html_body=None: sent.update(subject=subject, body=body, html_body=html_body),
+    )
 
     scheduler = FakeScheduler()
     result = module.shareholders_check(engine, _settings(), attempt=14, scheduler=scheduler)
@@ -78,6 +82,8 @@ def test_monday_update_detected_sends_email_and_cancels_retries(monkeypatch) -> 
     assert "sent summary email" in result[0]
     assert sent["subject"] == "NAPA Monday Top-20 update"
     assert "Entrants: C" in sent["body"]
+    assert "<table" in str(sent["html_body"])
+    assert "Delta" in str(sent["html_body"])
     assert scheduler.removed == ["monday_top20_15_20250106", "monday_top20_16_20250106"]
 
 
@@ -97,12 +103,17 @@ def test_monday_16_unchanged_records_assumption(monkeypatch) -> None:
 
     monkeypatch.setattr(module, "datetime", MondayDateTime)
     monkeypatch.setattr(module, "fetch_shareholders", lambda _url: snapshot)
-    monkeypatch.setattr(module, "send_email", lambda _s, subject, body: sent.update(subject=subject, body=body))
+    monkeypatch.setattr(
+        module,
+        "send_email",
+        lambda _s, subject, body, html_body=None: sent.update(subject=subject, body=body, html_body=html_body),
+    )
 
     result = module.shareholders_check(engine, _settings(), attempt=16, scheduler=FakeScheduler())
 
     assert "assumed unchanged" in result[0]
     assert sent["subject"] == "NAPA Monday Top-20 unchanged"
+    assert "<table" in str(sent["html_body"])
 
     # The new code records notes="ok" via insert_shareholder_snapshot when no change is detected
     run_rows = engine.execute(
@@ -137,7 +148,11 @@ def test_force_run_executes_immediately_regardless_of_day(monkeypatch) -> None:
 
     monkeypatch.setattr(module, "datetime", WednesdayDateTime)
     monkeypatch.setattr(module, "fetch_shareholders", lambda _url: snapshot)
-    monkeypatch.setattr(module, "send_email", lambda _s, subject, body: sent.update(subject=subject, body=body))
+    monkeypatch.setattr(
+        module,
+        "send_email",
+        lambda _s, subject, body, html_body=None: sent.update(subject=subject, body=body, html_body=html_body),
+    )
 
     result = module.shareholders_check(engine, _settings(), force=True)
 
@@ -147,6 +162,7 @@ def test_force_run_executes_immediately_regardless_of_day(monkeypatch) -> None:
     # Verify email was sent
     assert sent["subject"] == "NAPA Manual Top-20 Check"
     assert "No change detected" in sent["body"] or "no changes detected" in result[0]
+    assert "<table" in str(sent["html_body"])
     
     # Verify run row was inserted with attempt_hour=15, not Monday check
     run_rows = engine.execute(
@@ -191,7 +207,11 @@ def test_force_run_with_change_detects_and_emails(monkeypatch) -> None:
 
     monkeypatch.setattr(module, "datetime", WednesdayDateTime)
     monkeypatch.setattr(module, "fetch_shareholders", lambda _url: new_snapshot)
-    monkeypatch.setattr(module, "send_email", lambda _s, subject, body: sent.update(subject=subject, body=body))
+    monkeypatch.setattr(
+        module,
+        "send_email",
+        lambda _s, subject, body, html_body=None: sent.update(subject=subject, body=body, html_body=html_body),
+    )
 
     result = module.shareholders_check(engine, _settings(), force=True)
 
@@ -199,6 +219,7 @@ def test_force_run_with_change_detects_and_emails(monkeypatch) -> None:
     assert "Top-20 updated" in result[0]
     assert sent["subject"] == "NAPA Monday Top-20 update"
     assert "Entrants: C" in sent["body"]
+    assert "<table" in str(sent["html_body"])
     
     # Verify snapshot and rows were inserted
     snapshot_rows = engine.execute(
@@ -220,7 +241,11 @@ def test_non_monday_gated_run_records_skipped(monkeypatch) -> None:
             return datetime(2025, 1, 8, 15, 30, tzinfo=tz)
 
     monkeypatch.setattr(module, "datetime", WednesdayDateTime)
-    monkeypatch.setattr(module, "send_email", lambda _s, subject, body: sent.update(subject=subject, body=body))
+    monkeypatch.setattr(
+        module,
+        "send_email",
+        lambda _s, subject, body, html_body=None: sent.update(subject=subject, body=body, html_body=html_body),
+    )
 
     result = module.shareholders_check(engine, _settings())
 

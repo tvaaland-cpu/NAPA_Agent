@@ -34,14 +34,13 @@ def _tls_context() -> ssl.SSLContext:
     return ssl.create_default_context(cafile=certifi.where())
 
 
-def send_email(settings: Settings, subject: str, body: str, html_body: str | None = None) -> None:
+def send_email(settings: Settings, subject: str, text_body: str, html_body: str | None = None) -> None:
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = settings.smtp_from
     message["To"] = settings.smtp_to
-    message.set_content(body)
-    
-    # If HTML body is provided, add it as an alternative
+    message.set_content(text_body)
+
     if html_body:
         message.add_alternative(html_body, subtype="html")
 

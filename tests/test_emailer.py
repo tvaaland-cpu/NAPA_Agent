@@ -81,3 +81,28 @@ def test_send_email_uses_ssl_for_465(monkeypatch):
 
     assert recorder.smtp_ssl_instance.logged_in_with == ("user@example.com", "secret")
     assert recorder.smtp_instance.message is None
+
+
+def test_send_email_attaches_html_alternative(monkeypatch):
+    recorder = Recorder()
+    monkeypatch.setattr("napa_agent.notify.emailer.smtplib.SMTP", recorder.smtp)
+    monkeypatch.setattr("napa_agent.notify.emailer.smtplib.SMTP_SSL", recorder.smtp_ssl)
+
+    settings = SimpleNamespace(
+        smtp_host="smtp.gmail.com",
+        smtp_port=587,
+        smtp_user="user@example.com",
+        smtp_password="secret",
+        smtp_from="from@example.com",
+        smtp_to="to@example.com",
+    )
+
+    send_email(settings, "subject", "text body", "<html><body><p>html body</p></body></html>")
+
+    message = recorder.smtp_instance.message
+    assert message is not None
+    assert message.get_content_type() == "multipart/alternative"
+    parts = list(message.iter_parts())
+    assert len(parts) == 2
+    assert parts[0].get_content_type() == "text/plain"
+    assert parts[1].get_content_type() == "text/html"
