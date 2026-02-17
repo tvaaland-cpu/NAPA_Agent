@@ -5,6 +5,7 @@ import ssl
 import os
 import warnings
 from email.message import EmailMessage
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import certifi
@@ -33,12 +34,16 @@ def _tls_context() -> ssl.SSLContext:
     return ssl.create_default_context(cafile=certifi.where())
 
 
-def send_email(settings: Settings, subject: str, body: str) -> None:
+def send_email(settings: Settings, subject: str, body: str, html_body: str | None = None) -> None:
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = settings.smtp_from
     message["To"] = settings.smtp_to
     message.set_content(body)
+    
+    # If HTML body is provided, add it as an alternative
+    if html_body:
+        message.add_alternative(html_body, subtype="html")
 
     port = int(settings.smtp_port)
     tls_context = _tls_context()

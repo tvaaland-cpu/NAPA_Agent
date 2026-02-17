@@ -43,53 +43,89 @@ def shareholders_check(
     *,
     attempt: int | None = None,
     scheduler: BaseScheduler | None = None,
+    force: bool = False,
 ) -> list[str]:
     now_oslo = datetime.now(OSLO_TZ)
-    if now_oslo.weekday() != 0:
-        return ["Skipped Monday Top-20 check outside Monday"]
-
     attempt_hour = attempt or now_oslo.hour
-    monday_key = now_oslo.strftime("%Y%m%d")
+    is_monday = now_oslo.weekday() == 0
+    
+    # Check gating: only run on Monday or if forced
+    if not force and not is_monday:
+        insert_shareholder_run(
+            engine,
+            attempt_hour=attempt_hour,
+            updated_changed_bool=False,
+            notes="skipped: not Monday",
+        )
+        return ["Skipped: not Monday"]
 
-    if attempt_hour == 13:
+    # For scheduled (non-force) Monday runs at 13:00, schedule retries
+    monday_key = now_oslo.strftime("%Y%m%d")
+    if attempt_hour == 13 and not force and scheduler is not None:
         _schedule_retry_attempts(scheduler, now_oslo, monday_key, engine, settings)
 
-    previous_snapshot = fetch_latest_shareholder_snapshot(engine)
-    snapshot = fetch_shareholders(settings.napatech_shareinfo_url)
-    changed, snapshot_id = insert_shareholder_snapshot(engine, snapshot, attempt_hour=attempt_hour)
-
-    if changed and snapshot_id is not None:
-        current_snapshot = fetch_shareholder_snapshot(engine, snapshot_id)
-        if current_snapshot is None:
-            return ["Snapshot inserted but unavailable for reporting"]
-
-        report = _build_update_report(engine, previous_snapshot, current_snapshot)
-        send_email(
-            settings,
-            "NAPA Monday Top-20 update",
-            f"Monday Top-20 update detected at {attempt_hour:02d}:00 Europe/Oslo.\n\n{report}",
+    # Fetch and process
+    try:
+        previous_snapshot = fetch_latest_shareholder_snapshot(engine)
+        snapshot = fetch_shareholders(settings.napatech_shareinfo_url)
+        
+        # insert_shareholder_snapshot will insert a run row with proper updated_changed_bool
+        changed, snapshot_id = insert_shareholder_snapshot(
+            engine,
+            snapshot,
+            attempt_hour=attempt_hour,
+            notes="ok",
         )
-        _cancel_remaining_attempts(scheduler, monday_key, attempt_hour)
-        return [f"Top-20 updated at {attempt_hour:02d}:00; sent summary email"]
 
-    if attempt_hour < 16:
-        return [f"No Top-20 update at {attempt_hour:02d}:00; retry remains scheduled"]
+        # Email on: (1) change detected, (2) force run, or (3) final attempt on Monday
+        should_email = changed or force or (is_monday and attempt_hour >= 16)
+        
+        if should_email:
+            if changed and snapshot_id is not None:
+                current_snapshot = fetch_shareholder_snapshot(engine, snapshot_id)
+                if current_snapshot is None:
+                    return ["Snapshot inserted but unavailable for reporting"]
 
-    insert_shareholder_run(
-        engine,
-        attempt_hour=attempt_hour,
-        updated_changed_bool=False,
-        notes="assumed unchanged",
-    )
-    unchanged_report = _build_unchanged_report(previous_snapshot)
-    send_email(
-        settings,
-        "NAPA Monday Top-20 unchanged",
-        "Monday Top-20 unchanged by 16:00 Europe/Oslo.\n"
-        "Final decision: assumed unchanged for this Monday.\n\n"
-        f"{unchanged_report}",
-    )
-    return ["No update by 16:00; recorded assumed unchanged and emailed summary"]
+                report = _build_update_report(engine, previous_snapshot, current_snapshot)
+                subject = "NAPA Monday Top-20 update"
+                body = f"Monday Top-20 update detected at {attempt_hour:02d}:00 Europe/Oslo.\n\n{report}"
+            else:
+                # No change but emailing (force or final attempt)
+                report = _build_unchanged_report(previous_snapshot)
+                subject = (
+                    "NAPA Manual Top-20 Check" if force
+                    else "NAPA Monday Top-20 unchanged"
+                )
+                body = (
+                    f"Manual force run completed.\n\n{report}"
+                    if force
+                    else f"Monday Top-20 unchanged by 16:00 Europe/Oslo.\nFinal decision: assumed unchanged for this Monday.\n\n{report}"
+                )
+            
+            send_email(settings, subject, body)
+
+        # Cancel remaining retry jobs if we found a change (and not a force run)
+        if changed and not force and is_monday and scheduler is not None:
+            _cancel_remaining_attempts(scheduler, monday_key, attempt_hour)
+
+        if changed:
+            return [f"Top-20 updated at {attempt_hour:02d}:00; sent summary email"]
+        elif force:
+            return [f"Manual force run completed; no changes detected"]
+        elif attempt_hour >= 16:
+            return [f"No update by 16:00; assumed unchanged for this Monday"]
+        else:
+            return [f"No Top-20 update at {attempt_hour:02d}:00; retry remains scheduled"]
+
+    except Exception as exc:
+        # Always record the error, then re-raise for scheduler/CLI failure visibility.
+        insert_shareholder_run(
+            engine,
+            attempt_hour=attempt_hour,
+            updated_changed_bool=False,
+            notes=f"error: {str(exc)}",
+        )
+        raise
 
 
 def _schedule_retry_attempts(
@@ -160,19 +196,24 @@ def _build_update_report(engine, previous: dict | None, current: dict) -> str:
         "- Biggest share changes: " + (_format_share_changes(share_changes[:5]) if share_changes else "none"),
         _totals_section(prev_rows, curr_rows),
         _rolling_window_section(engine, current),
+        "",
+        _current_top20_section(curr_rows),
     ]
     return "\n".join(lines)
 
 
 def _build_unchanged_report(previous: dict | None) -> str:
     if previous is None:
-        return "No historical Top-20 snapshot exists yet; no snapshot copy stored for this Monday."
+        return "No historical Top-20 snapshot exists yet."
 
     snapshot_dt = previous["snapshot_dt"].astimezone(OSLO_TZ)
-    return (
-        "Kept prior snapshot as baseline (no new copy stored): "
-        f"#{previous['snapshot_id']} from {format_datetime(snapshot_dt)}"
-    )
+    lines = [
+        "No changes detected from previous snapshot: "
+        f"#{previous['snapshot_id']} from {format_datetime(snapshot_dt)}",
+        "",
+        _current_top20_section(previous.get("rows", [])),
+    ]
+    return "\n".join(lines)
 
 
 def _totals_section(prev_rows: list[dict], curr_rows: list[dict]) -> str:
@@ -186,6 +227,34 @@ def _totals_section(prev_rows: list[dict], curr_rows: list[dict]) -> str:
         f"shares {curr_shares:,} ({curr_shares - prev_shares:+,} WoW), "
         f"pct {curr_pct:.2f}% ({curr_pct - prev_pct:+.2f} pp WoW)"
     )
+
+
+def _current_top20_section(rows: list[dict]) -> str:
+    """Format current Top-20 shareholders as a readable list."""
+    if not rows:
+        return "Current Top-20: (no data)"
+    
+    lines = ["Current Top-20 shareholders:"]
+    total_shares = 0
+    total_pct = 0.0
+    
+    for row in rows[:20]:
+        rank = row.get("rank", "?")
+        name = row.get("holder_name", "?")
+        shares = int(row.get("shares") or 0)
+        pct = float(row.get("pct") or 0.0)
+        holder_type = row.get("holder_type") or ""
+        
+        total_shares += shares
+        total_pct += pct
+        
+        type_str = f" ({holder_type})" if holder_type else ""
+        lines.append(f"  {rank:2}. {name:<45} {shares:>10,} shares {pct:>6.2f}%{type_str}")
+    
+    lines.append(f"  ---")
+    lines.append(f"  Total: {total_shares:>45,} shares {total_pct:>6.2f}%")
+    
+    return "\n".join(lines)
 
 
 def _rolling_window_section(engine, current: dict) -> str:

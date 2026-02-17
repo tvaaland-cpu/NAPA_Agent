@@ -117,22 +117,43 @@ def _find_candidate_table(tables: list[list[list[str]]]) -> list[list[str]]:
     if not tables:
         return []
 
+    preferred: list[tuple[int, list[list[str]]]] = []
+    fallback: list[tuple[int, list[list[str]]]] = []
     for table in tables:
-        header_line = " ".join(table[0]).lower() if table else ""
-        if "shareholder" in header_line and ("share" in header_line or "%" in header_line):
-            return table
+        if not table:
+            continue
+        score = _top20_shape_score(table)
+        if score >= 100:
+            preferred.append((score, table))
+        elif score > 0:
+            fallback.append((score, table))
 
-    best: list[list[str]] = []
-    best_rows = 0
+    if preferred:
+        preferred.sort(key=lambda item: item[0], reverse=True)
+        return preferred[0][1]
+
+    if fallback:
+        fallback.sort(key=lambda item: item[0], reverse=True)
+        return fallback[0][1]
+
+    # Last-resort fallback: only consider numeric-heavy tables with rank pattern.
+    numeric_ranked: list[tuple[int, list[list[str]]]] = []
     for table in tables:
+        if not table:
+            continue
+        if not _has_rank_pattern(table):
+            continue
         rows_with_numbers = 0
         for row in table:
-            if any(_parse_int(cell) is not None for cell in row[1:]):
+            if any(_parse_int(cell) is not None for cell in row):
                 rows_with_numbers += 1
-        if rows_with_numbers > best_rows:
-            best_rows = rows_with_numbers
-            best = table
-    return best
+        if rows_with_numbers:
+            numeric_ranked.append((rows_with_numbers, table))
+
+    if numeric_ranked:
+        numeric_ranked.sort(key=lambda item: item[0], reverse=True)
+        return numeric_ranked[0][1]
+    return []
 
 
 def _parse_rows(table: list[list[str]]) -> list[ShareholderRow]:
@@ -147,10 +168,30 @@ def _parse_rows(table: list[list[str]]) -> list[ShareholderRow]:
     for row in data_rows:
         if _is_header_like(row):
             continue
+        
+        # Skip summary rows (total rows, ranks > 20, empty ranks)
+        rank_raw = _value_at(row, index_map.get("rank"))
+        if rank_raw:
+            rank = _parse_int(rank_raw or "")
+            if rank is None or rank > 20:
+                continue
+        
         holder_name = _value_at(row, index_map.get("holder"))
         shares_raw = _value_at(row, index_map.get("shares"))
         pct_raw = _value_at(row, index_map.get("pct"))
+        
+        # Skip rows with missing critical fields
         if not holder_name or not shares_raw or not pct_raw:
+            continue
+        
+        # Reject rows where holder_name is purely numeric (parsing error)
+        if holder_name.isdigit():
+            logger.debug(f"Skipping row with numeric-only holder_name: {holder_name}")
+            continue
+        
+        # Skip total/summary rows by name patterns
+        holder_lower = holder_name.lower()
+        if any(keyword in holder_lower for keyword in ["total", "other shareholders", "grand total"]):
             continue
 
         shares = _parse_int(shares_raw)
@@ -158,8 +199,11 @@ def _parse_rows(table: list[list[str]]) -> list[ShareholderRow]:
         if shares is None or pct is None:
             continue
 
-        rank_raw = _value_at(row, index_map.get("rank"))
-        rank = _parse_int(rank_raw or "") or (len(parsed) + 1)
+        # Assign rank: if present in table use it, else auto-assign based on position
+        if rank_raw:
+            rank = _parse_int(rank_raw) or (len(parsed) + 1)
+        else:
+            rank = len(parsed) + 1
 
         parsed.append(
             ShareholderRow(
@@ -171,8 +215,12 @@ def _parse_rows(table: list[list[str]]) -> list[ShareholderRow]:
                 country=_value_at(row, index_map.get("country")),
             )
         )
+        
+        # Stop after collecting 20 rows
+        if len(parsed) >= 20:
+            break
 
-    return parsed
+    return parsed[:20]
 
 
 def _build_index_map(header: list[str]) -> dict[str, int]:
@@ -187,11 +235,11 @@ def _build_index_map(header: list[str]) -> dict[str, int]:
     index_map: dict[str, int] = {}
     mapping = {
         "rank": locate("rank", "#", "no."),
-        "holder": locate("shareholder", "holder", "name"),
+        "holder": locate("investor", "shareholder", "holder", "name"),
         "shares": locate("shares", "number of shares"),
         "pct": locate("%", "ownership", "capital"),
         "holder_type": locate("type", "investor type"),
-        "country": locate("country"),
+        "country": locate("country", "citizenship"),
     }
     for key, value in mapping.items():
         if value is not None:
@@ -215,7 +263,103 @@ def _value_at(values: list[str], idx: int | None) -> str | None:
 
 def _is_header_like(values: list[str]) -> bool:
     joined = " ".join(values).lower()
-    return "shareholder" in joined and ("share" in joined or "%" in joined)
+    has_name_hint = any(
+        token in joined
+        for token in (
+            "shareholder",
+            "shareholders",
+            "largest shareholders",
+            "largest investor",
+            "largest investors",
+            "investor",
+            "holder",
+            "name",
+        )
+    )
+    has_value_hint = any(
+        token in joined
+        for token in (
+            "share",
+            "number of shares",
+            "%",
+            "ownership",
+            "capital",
+        )
+    )
+    return has_name_hint and has_value_hint
+
+
+def _has_rank_pattern(table: list[list[str]]) -> bool:
+    header = table[0]
+    index_map = _build_index_map(header)
+    data_rows = table[1:] if _is_header_like(header) else table
+    rank_idx = index_map.get("rank")
+    if rank_idx is None:
+        return False
+
+    ranks: set[int] = set()
+    for row in data_rows:
+        value = _value_at(row, rank_idx)
+        if not value:
+            continue
+        rank = _parse_int(value)
+        if rank is not None:
+            ranks.add(rank)
+    return set(range(1, 21)).issubset(ranks)
+
+
+def _top20_shape_score(table: list[list[str]]) -> int:
+    header = table[0]
+    header_like = _is_header_like(header)
+    index_map = _build_index_map(header)
+    data_rows = table[1:] if header_like else table
+
+    valid_rows = 0
+    non_numeric_names = 0
+    shares_numeric = 0
+    pct_numeric = 0
+    ranks: set[int] = set()
+
+    for row in data_rows:
+        holder_name = _value_at(row, index_map.get("holder"))
+        shares_raw = _value_at(row, index_map.get("shares"))
+        pct_raw = _value_at(row, index_map.get("pct"))
+        rank_raw = _value_at(row, index_map.get("rank"))
+
+        if not holder_name or not shares_raw or not pct_raw:
+            continue
+
+        shares = _parse_int(shares_raw)
+        pct = _parse_pct(pct_raw)
+        if shares is None or pct is None:
+            continue
+
+        valid_rows += 1
+        shares_numeric += 1
+        pct_numeric += 1
+        if not holder_name.isdigit():
+            non_numeric_names += 1
+
+        if rank_raw:
+            rank = _parse_int(rank_raw)
+            if rank is not None:
+                ranks.add(rank)
+
+    if valid_rows == 0:
+        return 0
+
+    score = 0
+    if header_like:
+        score += 30
+    if valid_rows >= 20:
+        score += 30
+    if non_numeric_names >= 20:
+        score += 20
+    if shares_numeric >= 20 and pct_numeric >= 20:
+        score += 20
+    if set(range(1, 21)).issubset(ranks):
+        score += 100
+    return score
 
 
 def _parse_int(value: str) -> int | None:

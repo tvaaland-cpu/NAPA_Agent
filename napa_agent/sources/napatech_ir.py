@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -8,7 +9,8 @@ from urllib.request import Request, urlopen
 
 from napa_agent.util.retry import retry_call
 
-IR_REPORTS_PATH = "reports-and-presentations/"
+logger = logging.getLogger(__name__)
+REPORTS_SEGMENT = "reports-and-presentations"
 
 
 class _ReportsPageParser(HTMLParser):
@@ -115,9 +117,17 @@ def parse_ir_updates(html: str, page_url: str) -> list[dict[str, str | datetime 
 
 @retry_call(attempts=3, base_delay=1, max_delay=10)
 def fetch_ir_updates(base_url: str, timeout: int = 30) -> list[dict[str, str | datetime | None]]:
-    page_url = urljoin(base_url, IR_REPORTS_PATH)
+    page_url = _build_reports_page_url(base_url)
+    logger.debug("Napatech IR fetch URL: %s", page_url)
     request = Request(page_url, headers={"User-Agent": "napa-agent/0.1"})
     with urlopen(request, timeout=timeout) as response:
         html = response.read().decode("utf-8", errors="ignore")
 
     return parse_ir_updates(html, page_url)
+
+
+def _build_reports_page_url(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    if normalized.lower().endswith(f"/{REPORTS_SEGMENT}"):
+        return normalized + "/"
+    return normalized + f"/{REPORTS_SEGMENT}/"
