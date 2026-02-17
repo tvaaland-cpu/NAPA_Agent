@@ -32,7 +32,7 @@ class Settings(BaseModel):
         alias="EURONEXT_NEWS_URL",
     )
     napatech_ir_base_url: str = Field(
-        default="https://napatech.com/investor-relations/",
+        default="https://www.napatech.com/investor-relations/reports-and-presentations/",
         alias="NAPATECH_IR_BASE_URL",
     )
 
